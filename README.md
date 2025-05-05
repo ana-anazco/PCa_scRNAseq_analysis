@@ -1,4 +1,4 @@
-#scRNA-seq analysis in murine prostate cancer samples
+# scRNA-seq analysis in murine prostate cancer samples
 This repository will contain all scripts and code used for the single-cell RNA sequencing analyses presented in the doctoral thesis:
 
 "Unraveling RNA modification dynamics in prostate cancer progression at single-cell resolution"
