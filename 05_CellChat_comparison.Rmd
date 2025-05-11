@@ -1,0 +1,483 @@
+---
+title: "CellChat"
+author: "AnaAñazco"
+date: "2025-03"
+output: 
+   html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    collapsed: true
+    smooth_scroll: true
+    theme: simplex
+    highlight: kate
+    df_print: paged
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.height=7, fig.width=10)
+library(CellChat)
+library(patchwork)
+library(Seurat)
+library(ggpubr)
+library(DT)
+library(ggrepel)
+library(plotly)
+library(future)
+library(Nebulosa)
+library(gridExtra)
+library(readxl)
+```
+
+Loading data
+
+```{r include=FALSE}
+cellchat.H <- readRDS('CellChat_Pcif1binary_Myeloid_H.rds') 
+cellchat.HC <- readRDS('CellChat_Pcif1binary_Myeloid_HC.rds') 
+cellchat.T <- readRDS('CellChat_Pcif1binary_Myeloid_T.rds') 
+cellchat.TC <- readRDS('CellChat_Pcif1binary_Myeloid_TC.rds') 
+#Aplicar netAnalysis_computeCentrality a cada objeto por separado
+future.seed=TRUE
+future::plan(strategy = 'multisession', workers = 4)  # Safe parallel setup
+cellchat.H <- netAnalysis_computeCentrality(cellchat.H, slot.name = "netP")
+cellchat.T <- netAnalysis_computeCentrality(cellchat.T, slot.name = "netP")
+cellchat.HC <- netAnalysis_computeCentrality(cellchat.HC, slot.name = "netP")
+cellchat.TC <- netAnalysis_computeCentrality(cellchat.TC, slot.name = "netP")
+#Crear object.list
+object.list <- list(healthy = cellchat.H, healthy_c = cellchat.HC, tumor = cellchat.T, tumor_c = cellchat.TC) 
+# Merge CellChat objects from different conditions for comparison
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+
+object.list_TvsH <- list(healthy = cellchat.H, tumor = cellchat.T) 
+cellchat_TvsH <- mergeCellChat(object.list_TvsH, add.names = names(object.list_TvsH))
+object.list_TCvsT <- list(healthy = cellchat.T, tumor = cellchat.TC) 
+cellchat_TCvsT <- mergeCellChat(object.list_TCvsT, add.names = names(object.list_TCvsT))
+```
+
+# FC interactions
+
+## Chord plot
+
+The differential number of interactions or interaction strength in the cell-cell communication network between two datasets can be visualized using circle plot, where $\color{red}{\text{red}}$ (or $\color{blue}{\text{blue}}$) colored edges represent $\color{red}{\text{increased}}$ (or $\color{blue}{\text{decreased}}$) signaling in the second dataset compared to the first one.
+
+### PCa vs H
+
+```{r circle TvsH, fig.width=12, fig.height=6}
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_diffInteraction(cellchat_TvsH, weight.scale = T)
+netVisual_diffInteraction(cellchat_TvsH, weight.scale = T, measure = "weight")
+```
+
+### CRPC vs PCa
+
+```{r circle TCvsT, fig.width=12, fig.height=6}
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_diffInteraction(cellchat_TCvsT, weight.scale = T)
+netVisual_diffInteraction(cellchat_TCvsT, weight.scale = T, measure = "weight")
+```
+
+## Heatmaps
+
+CellChat can also show differential number of interactions or interaction strength in greater details using a heatmap. The top colored bar plot represents the sum of each column of the absolute values displayed in the heatmap (incoming signaling). The right colored bar plot represents the sum of each row of the absolute values (outgoing signaling). Therefore, the bar height indicates the degree of change in terms of the number of interactions or interaction strength between the two conditions. In the colorbar, $\color{red}{\text{red}}$ (or $\color{blue}{\text{blue}}$) represents $\color{red}{\text{increased}}$ (or $\color{blue}{\text{decreased}}$) signaling in the second dataset compared to the first one.
+
+### TvsH
+
+```{r TvsH}
+gg1 <- netVisual_heatmap(cellchat, comparison = c(1,3))
+#Do heatmap based on a merged object
+gg2 <- netVisual_heatmap(cellchat, measure = "weight", comparison = c(1,3))
+#Do heatmap based on a merged object
+gg1 + gg2
+```
+
+### TCvsT
+
+```{r TCvsT}
+gg1 <- netVisual_heatmap(cellchat, comparison = c(3,4))
+#Do heatmap based on a merged object
+gg2 <- netVisual_heatmap(cellchat, measure = "weight", comparison = c(3,4))
+#Do heatmap based on a merged object
+gg1 + gg2
+```
+
+# FC ligands - receptors
+
+## Epithelial as source
+
+Epithelial: Luminal, Basal, PrU
+
+### PCa vs H
+
+```{r, fig.height=12, fig.wide=TRUE, fig.width=10, include=FALSE}
+
+HarLum_source_TvsH <- netVisual_bubble(cellchat, # Define epithelial clusters manually (adjust if needed)
+# In this dataset, clusters 1:3 are epithelial and 4:9 are others
+# Modify these indices to match your own cluster annotation
+sources.use = c(1:3), targets.use = c(4:9), comparison = c(1, 3), angle.x = 45)
+data <- HarLum_source_TvsH$data
+# Small constant to avoid division by zero in log2 fold change
+epsilon <- 1e-6  # Valor pequeño para manejar divisiones por cero
+fc_data <- data %>%
+  group_by(interaction_name, group.names) %>%
+  summarise(prob_healthy = sum(prob[dataset == "healthy"], na.rm = TRUE),
+            prob_tumor = sum(prob[dataset == "tumor"], na.rm = TRUE)) %>%
+  mutate(Log2FoldChange = log2((prob_tumor + epsilon) / (prob_healthy + epsilon))) %>%
+  ungroup()
+
+fc_data$group.names <- factor(fc_data$group.names, levels = sort(unique(fc_data$group.names)))
+filtered_data <- fc_data %>%
+  filter(prob_healthy != 0 & prob_tumor != 0)
+# Filtrar datos con prob_healthy igual a 0
+data_onlytumor <- fc_data %>%
+  filter(prob_healthy == 0)
+# Filtrar datos con prob_tumor igual a 0
+data_onlyhealthy <- fc_data %>%
+  filter(prob_tumor == 0)
+```
+
+```{r, fig.height=7, fig.width=10}
+plot1 <- ggplot(filtered_data, aes(x = interaction_name, y = group.names, fill = Log2FoldChange)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, na.value = "grey50", guide = guide_colorbar(title = "Log2 Fold Change")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Log2FC of Commun. Probability (PCa vs H)",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Log2FC")
+
+plotly1 <- ggplotly(plot1, tooltip = c("x", "y", "fill"))
+plotly1
+```
+
+L-R only expressed in PCa
+
+```{r}
+plot2 <- ggplot(data_onlytumor, aes(x = interaction_name, y = group.names, fill = prob_tumor)) +
+  geom_tile() +
+  scale_fill_viridis_c(guide = guide_colorbar(title = "prob_tumor")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "L-R pairs expressed only in PCa",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Commun. Prob.")
+
+plotly2 <- ggplotly(plot2, tooltip = c("x", "y", "fill"))
+plotly2
+```
+
+L-R expressed only in Healthy
+
+```{r}
+plot3 <- ggplot(data_onlyhealthy, aes(x = interaction_name, y = group.names, fill = prob_healthy)) +
+  geom_tile() +
+  scale_fill_viridis_c(guide = guide_colorbar(title = "prob_healthy")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "L-R pairs expressed only in Healthy",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Commun. Prob.")
+
+plotly3 <- ggplotly(plot3, tooltip = c("x", "y", "fill"))
+plotly3
+```
+
+### CRPC vs PCa
+
+```{r}
+HarLum_source_TCvsT <- netVisual_bubble(cellchat, # Define epithelial clusters manually (adjust if needed)
+# In this dataset, clusters 1:3 are epithelial and 4:9 are others
+# Modify these indices to match your own cluster annotation
+sources.use = c(1:3), targets.use = c(4:9), comparison = c(3, 4), angle.x = 45)
+data <- HarLum_source_TCvsT$data
+# Small constant to avoid division by zero in log2 fold change
+epsilon <- 1e-6  # Valor pequeño para manejar divisiones por cero
+fc_data <- data %>%
+  group_by(interaction_name, group.names) %>%
+  summarise(prob_healthy = sum(prob[dataset == "tumor"], na.rm = TRUE),
+            prob_tumor = sum(prob[dataset == "tumor_c"], na.rm = TRUE)) %>%
+  mutate(Log2FoldChange = log2((prob_tumor + epsilon) / (prob_healthy + epsilon))) %>%
+  ungroup()
+
+fc_data$group.names <- factor(fc_data$group.names, levels = sort(unique(fc_data$group.names)))
+filtered_data <- fc_data %>%
+  filter(prob_healthy != 0 & prob_tumor != 0)
+# Filtrar datos con prob_healthy igual a 0
+data_onlytumor <- fc_data %>%
+  filter(prob_healthy == 0)
+# Filtrar datos con prob_tumor igual a 0
+data_onlyhealthy <- fc_data %>%
+  filter(prob_tumor == 0)
+```
+
+```{r}
+plot1 <- ggplot(filtered_data, aes(x = interaction_name, y = group.names, fill = Log2FoldChange)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, na.value = "grey50", guide = guide_colorbar(title = "Log2 Fold Change")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 8)) +
+  labs(title = "Log2FC of Commun. Probability (CRPC vs PCa)",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Log2FC")
+
+plotly4 <- ggplotly(plot1, tooltip = c("x", "y", "fill"))
+plotly4
+```
+
+L-R only expressed in Tumor Cast
+
+```{r}
+plot2 <- ggplot(data_onlytumor, aes(x = interaction_name, y = group.names, fill = prob_tumor)) +
+  geom_tile() +
+  scale_fill_viridis_c(guide = guide_colorbar(title = "prob_tumor")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "L-R pairs expressed only in CRPC",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Commun. Prob.")
+
+plotly5 <- ggplotly(plot2, tooltip = c("x", "y", "fill"))
+plotly5
+```
+
+L-R only expressed in Tumor
+
+```{r}
+plot3 <- ggplot(data_onlyhealthy, aes(x = interaction_name, y = group.names, fill = prob_healthy)) +
+  geom_tile() +
+  scale_fill_viridis_c(guide = guide_colorbar(title = "prob_healthy")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "L-R pairs expressed only in PCa",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Commun. Prob.")
+
+plotly3 <- ggplotly(plot3, tooltip = c("x", "y", "fill"))
+plotly3
+```
+
+## Epithelial as target
+
+### PCa vs H
+
+```{r, include=FALSE}
+table <- netVisual_bubble(cellchat, sources.use = c(4:9), targets.use = c(1:3), comparison = c(1, 3), angle.x = 45)
+data <- table$data
+fc_data <- data %>%
+  group_by(interaction_name, group.names) %>%
+  summarise(prob_healthy = sum(prob[dataset == "healthy"], na.rm = TRUE),
+            prob_tumor = sum(prob[dataset == "tumor"], na.rm = TRUE)) %>%
+  mutate(Log2FoldChange = log2((prob_tumor + epsilon) / (prob_healthy + epsilon))) %>%
+  ungroup()
+
+fc_data$group.names <- factor(fc_data$group.names, levels = sort(unique(fc_data$group.names)))
+filtered_data <- fc_data %>%
+  filter(prob_healthy != 0 & prob_tumor != 0)
+# Filtrar datos con prob_healthy igual a 0
+data_onlytumor <- fc_data %>%
+  filter(prob_healthy == 0)
+# Filtrar datos con prob_tumor igual a 0
+data_onlyhealthy <- fc_data %>%
+  filter(prob_tumor == 0)
+```
+
+```{r, fig.height=7, fig.width=10}
+plot1 <- ggplot(filtered_data, aes(x = interaction_name, y = group.names, fill = Log2FoldChange)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, na.value = "grey50", guide = guide_colorbar(title = "Log2 Fold Change")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Log2FC of Commun. Probability (PCa vs H)",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Log2FC")
+
+plotly1 <- ggplotly(plot1, tooltip = c("x", "y", "fill"))
+plotly1
+```
+
+L-R only expressed in PCa
+
+```{r}
+plot2 <- ggplot(data_onlytumor, aes(x = interaction_name, y = group.names, fill = prob_tumor)) +
+  geom_tile() +
+  scale_fill_viridis_c(guide = guide_colorbar(title = "prob_tumor")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 7)) +
+  labs(title = "L-R pairs expressed only in PCa",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Commun. Prob.")
+
+plotly2 <- ggplotly(plot2, tooltip = c("x", "y", "fill"))
+plotly2
+```
+
+L-R expressed only in Healthy
+
+```{r}
+plot3 <- ggplot(data_onlyhealthy, aes(x = interaction_name, y = group.names, fill = prob_healthy)) +
+  geom_tile() +
+  scale_fill_viridis_c(guide = guide_colorbar(title = "prob_healthy")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "L-R pairs expressed only in Healthy",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Commun. Prob.")
+
+plotly3 <- ggplotly(plot3, tooltip = c("x", "y", "fill"))
+plotly3
+```
+
+### CRPC vs PCa
+
+```{r, include=F}
+HarLum_source_TCvsT <- netVisual_bubble(cellchat, sources.use = c(4:9), targets.use = c(1:3), comparison = c(3, 4), angle.x = 45)
+data <- HarLum_source_TCvsT$data
+# Small constant to avoid division by zero in log2 fold change
+epsilon <- 1e-6  # Valor pequeño para manejar divisiones por cero
+fc_data <- data %>%
+  group_by(interaction_name, group.names) %>%
+  summarise(prob_healthy = sum(prob[dataset == "tumor"], na.rm = TRUE),
+            prob_tumor = sum(prob[dataset == "tumor_c"], na.rm = TRUE)) %>%
+  mutate(Log2FoldChange = log2((prob_tumor + epsilon) / (prob_healthy + epsilon))) %>%
+  ungroup()
+
+fc_data$group.names <- factor(fc_data$group.names, levels = sort(unique(fc_data$group.names)))
+filtered_data <- fc_data %>%
+  filter(prob_healthy != 0 & prob_tumor != 0)
+# Filtrar datos con prob_healthy igual a 0
+data_onlytumor <- fc_data %>%
+  filter(prob_healthy == 0)
+# Filtrar datos con prob_tumor igual a 0
+data_onlyhealthy <- fc_data %>%
+  filter(prob_tumor == 0)
+```
+
+```{r}
+plot1 <- ggplot(filtered_data, aes(x = interaction_name, y = group.names, fill = Log2FoldChange)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, na.value = "grey50", guide = guide_colorbar(title = "Log2 Fold Change")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Log2FC of Commun. Probability (TC vs T)",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Log2FC")
+
+plotly4 <- ggplotly(plot1, tooltip = c("x", "y", "fill"))
+plotly4
+```
+
+L-R only expressed in CRPC
+
+```{r}
+plot2 <- ggplot(data_onlytumor, aes(x = interaction_name, y = group.names, fill = prob_tumor)) +
+  geom_tile() +
+  scale_fill_viridis_c(guide = guide_colorbar(title = "prob_tumor")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "L-R pairs expressed only in Tumor Cast.",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Commun. Prob.")
+
+plotly5 <- ggplotly(plot2, tooltip = c("x", "y", "fill"))
+plotly5
+```
+
+L-R only expressed in PCa
+
+```{r}
+plot3 <- ggplot(data_onlyhealthy, aes(x = interaction_name, y = group.names, fill = prob_healthy)) +
+  geom_tile() +
+  scale_fill_viridis_c(guide = guide_colorbar(title = "prob_healthy")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "L-R pairs expressed only in Tumor",
+       x = "Ligand-Receptor Pair", y = "Source -> Target", fill = "Commun. Prob.")
+
+plotly3 <- ggplotly(plot3, tooltip = c("x", "y", "fill"))
+plotly3
+```
+
+# Identify dysfunctional signaling by using differential expression analysis
+
+We can identify the upgulated and down-regulated signaling ligand-receptor pairs based on the differential expression analysis (DEA). Specifically, we perform differential expression analysis between two biological conditions for each cell group, and then obtain the upgulated and down-regulated signaling based on the fold change of ligands in the sender cells and receptors in the receiver cells.
+
+Of note, users may observe the same LR pairs appearing in both the up-regulated and down-regulated results due to the fact that DEA between conditions is performed for each cell group.
+
+**Ligand-receptor pairs with upregulated ligands in CRPC**
+
+```{r}
+# define a positive dataset; the dataset with positive fold change against the other dataset
+pos.dataset = "tumor_c"
+# define a char name used for storing the results of differential expression analysis
+features.name = paste0(pos.dataset, ".merged")
+
+# perform differential expression analysis 
+# Of note, compared to CellChat version < v2, CellChat v2 now performs an ultra-fast Wilcoxon test using the presto package, which gives smaller values of logFC. Thus we here set a smaller value of thresh.fc compared to the original one (thresh.fc = 0.1). Users can also provide a vector and dataframe of customized DEGs by modifying the cellchat@var.features$LS.merged and cellchat@var.features$LS.merged.info. 
+
+# Differential expression to detect up/downregulated ligand/receptor pairs
+cellchat <- identifyOverExpressedGenes(cellchat, group.dataset = "datasets", pos.dataset = pos.dataset, features.name = features.name, only.pos = FALSE, thresh.pc = 0.1, thresh.fc = 0.05,thresh.p = 0.05, group.DE.combined = FALSE) 
+
+# map the results of differential expression analysis onto the inferred cell-cell communications to easily manage/subset the ligand-receptor pairs of interest
+net <- netMappingDEG(cellchat, features.name = features.name, variable.all = TRUE)
+# extract the ligand-receptor pairs with upregulated ligands in tumor
+net.up <- subsetCommunication(cellchat, net = net, datasets = "tumor_c",ligand.logFC = 0.05, receptor.logFC = NULL)
+# extract the ligand-receptor pairs with upregulated ligands and upregulated receptors in healthy, i.e.,downregulated in LS
+net.down <- subsetCommunication(cellchat, net = net, datasets = "tumor_c",ligand.logFC = -0.05, receptor.logFC = NULL)
+net.up.short <- net.up[ ,c(1:6, 9:11)]
+datatable(net.up.short, 
+          options = list(
+            searching = TRUE, ordering = TRUE, pageLength = 10,
+             style = list(
+              "font-family" = "'Arial", "font-size" = "14px")))
+```
+
+**Ligand-receptor pairs with downregulated ligands in CRPC**
+
+```{r}
+net.down.short <- net.down[ ,c(1:6, 9:11)]
+datatable(net.down.short, 
+          options = list(
+            searching = TRUE, ordering = TRUE, pageLength = 10,
+            #columnDefs = list(
+              #list(targets = "_all", visible = FALSE),  # Ocultar cols
+              #list(targets = c(1:6, 9:11), visible = TRUE)  # Mostrar estas cols
+             # )
+          
+             style = list(
+              "font-family" = "Arial", "font-size" = "14px")))
+
+```
+
+**Ligand-receptor pairs with upregulated receptors in CRPC**
+
+```{r}
+# extract the ligand-receptor pairs with upregulated ligands in tumor
+net.up <- subsetCommunication(cellchat, net = net, datasets = "tumor_c",ligand.logFC = NULL, receptor.logFC = 0.05)
+# extract the ligand-receptor pairs with upregulated ligands and upregulated receptors in healthy, i.e.,downregulated in LS
+net.down <- subsetCommunication(cellchat, net = net, datasets = "tumor_c",ligand.logFC = NULL, receptor.logFC = -0.05)
+net.up.short <- net.up[ ,c(1:6, 9:11)]
+datatable(net.up.short, 
+          options = list(
+            searching = TRUE, ordering = TRUE, pageLength = 10,
+             style = list(
+              "font-family" = "'Arial", "font-size" = "14px")))
+```
+
+**Ligand-receptor pairs with upregulated ligands in PCa**
+
+```{r}
+# define a positive dataset; the dataset with positive fold change against the other dataset
+pos.dataset = "tumor"
+# define a char name used for storing the results of differential expression analysis
+features.name = paste0(pos.dataset, ".merged")
+
+# perform differential expression analysis 
+# Of note, compared to CellChat version < v2, CellChat v2 now performs an ultra-fast Wilcoxon test using the presto package, which gives smaller values of logFC. Thus we here set a smaller value of thresh.fc compared to the original one (thresh.fc = 0.1). Users can also provide a vector and dataframe of customized DEGs by modifying the cellchat@var.features$LS.merged and cellchat@var.features$LS.merged.info. 
+
+# Differential expression to detect up/downregulated ligand/receptor pairs
+cellchat <- identifyOverExpressedGenes(cellchat, group.dataset = "datasets", pos.dataset = pos.dataset, features.name = features.name, only.pos = FALSE, thresh.pc = 0.1, thresh.fc = 0.05,thresh.p = 0.05, group.DE.combined = FALSE) 
+
+# map the results of differential expression analysis onto the inferred cell-cell communications to easily manage/subset the ligand-receptor pairs of interest
+net <- netMappingDEG(cellchat, features.name = features.name, variable.all = TRUE)
+# extract the ligand-receptor pairs with upregulated ligands in tumor
+net.up <- subsetCommunication(cellchat, net = net, datasets = "tumor",ligand.logFC = 0.05, receptor.logFC = NULL)
+# extract the ligand-receptor pairs with upregulated ligands and upregulated receptors in healthy, i.e.,downregulated in LS
+net.down <- subsetCommunication(cellchat, net = net, datasets = "tumor",ligand.logFC = -0.05, receptor.logFC = NULL)
+net.up.short <- net.up[ ,c(1:6, 9:11)]
+datatable(net.up.short, 
+          options = list(
+            searching = TRUE, ordering = TRUE, pageLength = 10,
+             style = list(
+              "font-family" = "'Arial", "font-size" = "14px")))
+```

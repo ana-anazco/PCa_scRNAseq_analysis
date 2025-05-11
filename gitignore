@@ -1,0 +1,15 @@
+
+# Ignore all .rds and .xlsx files globally
+*.rds
+*.xlsx
+
+# EXCEPTIONS: allow these example files in data/
+!data/example_object.rds
+!data/RMP_annotated.xlsx
+
+# RStudio and temporary files
+.Rhistory
+.RData
+.Rproj.user/
+*.log
+*.tmp
